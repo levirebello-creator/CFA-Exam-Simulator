@@ -28,10 +28,14 @@ NUMBERED_ITEM_PATTERN = re.compile(
 QUESTION_HEADER_PATTERN = re.compile(r"^\s*Question\s+(\d{1,3})\s*$", re.MULTILINE)
 
 # Matches an option line, e.g. "A. text", "(A) text", "A) text"
-# Tolerant of common OCR misreads: a doubled/stray lowercase letter right
-# after the real letter (Tesseract sometimes reads "C." as "Cc."), and a
-# comma misread in place of the period (e.g. "B, 11.50%.").
-OPTION_PATTERN = re.compile(r"^\s*\(?([ABC])\)?[a-zA-Z]{0,2}[\.\)\,]\s+(.*)", re.MULTILINE)
+# Tolerant of common OCR artifacts seen in real scans:
+#   - a doubled/stray letter right after the real one ("C." misread as "Cc.")
+#   - comma or colon misread in place of the period ("B," / "A:")
+#   - the letter marker in lowercase ("c." instead of "C.")
+#   - other OCR noise glued onto the same line before the marker ("urns C. text")
+#     -- handled by only requiring a preceding whitespace char rather than a
+#        true start-of-line, since OCR often merges what should be separate lines
+OPTION_PATTERN = re.compile(r"(?:^|(?<=\s))\(?([ABCabc])\)?[a-zA-Z]{0,2}[\.\)\,\:]\s+(.*)", re.MULTILINE)
 
 # ---------- Noise patterns (OCR artifacts to strip before parsing) ----------
 
@@ -111,11 +115,11 @@ def _parse_with_pattern(raw_text, matches):
 def _extract_options(block, option_matches):
     opts = {"A": "", "B": "", "C": ""}
     for oi, om in enumerate(option_matches):
-        letter = om.group(1)
+        letter = om.group(1).upper()
         opt_start = om.start()
         opt_end = option_matches[oi + 1].start() if oi + 1 < len(option_matches) else len(block)
         full_opt = block[opt_start:opt_end]
-        text = re.sub(r"^\s*\(?[ABC]\)?[a-zA-Z]{0,2}[\.\)\,]\s+", "", full_opt).strip()
+        text = re.sub(r"^\(?[ABCabc]\)?[a-zA-Z]{0,2}[\.\)\,\:]\s+", "", full_opt).strip()
         opts[letter] = text
     return opts
 
@@ -135,9 +139,9 @@ def parse_answer_key(raw_text: str):
             start = m.end()
             end = header_matches[idx + 1].start() if idx + 1 < len(header_matches) else len(raw_text)
             block = raw_text[start:end]
-            letter_match = re.search(r"^\s*\(?([ABC])\)?[\.\)]\s+", block, re.MULTILINE)
+            letter_match = re.search(r"^\s*\(?([ABCabc])\)?[a-zA-Z]{0,2}[\.\)\,\:]\s+", block, re.MULTILINE)
             if letter_match:
-                answers[q_num] = letter_match.group(1)
+                answers[q_num] = letter_match.group(1).upper()
         if answers:
             return answers
 
