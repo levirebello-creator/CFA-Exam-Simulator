@@ -6,10 +6,23 @@ rasterizing the page and running Tesseract OCR on it (for scanned mocks).
 import fitz  # PyMuPDF
 import pytesseract
 from pdf2image import convert_from_bytes
-from PIL import Image
+from PIL import Image, ImageOps
 import io
 
 MIN_CHARS_FOR_NATIVE = 40  # below this, assume the page is a scanned image
+OCR_DPI = 400  # higher DPI meaningfully improves Tesseract accuracy on scanned exam pages
+
+# --psm 6 = "assume a single uniform block of text", which suits a typical
+# single-column exam page much better than Tesseract's default mode (which
+# tries to detect complex multi-column layouts and can scramble line order).
+TESSERACT_CONFIG = "--psm 6"
+
+
+def _preprocess_for_ocr(image: Image.Image) -> Image.Image:
+    """Light preprocessing that reliably improves OCR accuracy on scans:
+    convert to grayscale and boost contrast so faint/uneven scans read cleaner."""
+    gray = image.convert("L")
+    return ImageOps.autocontrast(gray)
 
 
 def extract_pages_text(pdf_bytes: bytes, progress_callback=None):
@@ -33,15 +46,16 @@ def extract_pages_text(pdf_bytes: bytes, progress_callback=None):
 
     ocr_images = {}
     if pages_needing_ocr:
-        # Convert only the pages that need it, at a decent DPI for OCR accuracy
-        images = convert_from_bytes(pdf_bytes, dpi=300)
+        # Convert only the pages that need it, at a higher DPI for OCR accuracy
+        images = convert_from_bytes(pdf_bytes, dpi=OCR_DPI)
         for i in pages_needing_ocr:
             ocr_images[i] = images[i]
 
     total = len(doc)
     for i in range(total):
         if i in ocr_images:
-            text = pytesseract.image_to_string(ocr_images[i])
+            processed = _preprocess_for_ocr(ocr_images[i])
+            text = pytesseract.image_to_string(processed, config=TESSERACT_CONFIG)
             page_texts.append(text)
             ocr_used.append(True)
         else:
@@ -57,3 +71,4 @@ def extract_pages_text(pdf_bytes: bytes, progress_callback=None):
 def full_text(pdf_bytes: bytes, progress_callback=None):
     pages, ocr_flags = extract_pages_text(pdf_bytes, progress_callback)
     return "\n\n".join(pages), any(ocr_flags)
+

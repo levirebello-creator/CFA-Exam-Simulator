@@ -85,15 +85,16 @@ if mock_id:
             st.session_state[f"parsed_combined_{mock_id}"] = combined
             st.session_state.pop(f"parsed_questions_{mock_id}_{session_number}", None)
         else:
-            questions = parser.parse_questions(raw_text)
+            raw_text_clean = parser.strip_header_noise(raw_text)
+            questions = parser.parse_questions(raw_text_clean)
 
             answer_map = {}
             if answer_pdf:
                 ans_text, _ = full_text(answer_pdf.read())
-                answer_map = parser.parse_answer_key(ans_text)
+                answer_map = parser.parse_answer_key(parser.strip_header_noise(ans_text))
             else:
                 # maybe the answer key is embedded at the tail of the same PDF
-                tail = raw_text[int(len(raw_text) * 0.7):]
+                tail = raw_text_clean[int(len(raw_text_clean) * 0.7):]
                 answer_map = parser.parse_answer_key(tail)
 
             questions = parser.merge_answer_key(questions, answer_map)

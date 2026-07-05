@@ -28,7 +28,18 @@ NUMBERED_ITEM_PATTERN = re.compile(
 QUESTION_HEADER_PATTERN = re.compile(r"^\s*Question\s+(\d{1,3})\s*$", re.MULTILINE)
 
 # Matches an option line, e.g. "A. text", "(A) text", "A) text"
-OPTION_PATTERN = re.compile(r"^\s*\(?([ABC])\)?[\.\)]\s+(.*)", re.MULTILINE)
+# Tolerant of common OCR misreads: a doubled/stray lowercase letter right
+# after the real letter (Tesseract sometimes reads "C." as "Cc."), and a
+# comma misread in place of the period (e.g. "B, 11.50%.").
+OPTION_PATTERN = re.compile(r"^\s*\(?([ABC])\)?[a-zA-Z]{0,2}[\.\)\,]\s+(.*)", re.MULTILINE)
+
+# ---------- Noise patterns (OCR artifacts to strip before parsing) ----------
+
+# Running headers/footers that repeat on every page and sometimes get OCR'd
+# right into the middle of question or option text.
+HEADER_NOISE_PATTERN = re.compile(
+    r"Mock\s*Exam\s*\d+\s*Session\s*\d[\s\-]*(Questions|Answers)", re.IGNORECASE
+)
 
 # ---------- Answer key patterns ----------
 
@@ -104,7 +115,7 @@ def _extract_options(block, option_matches):
         opt_start = om.start()
         opt_end = option_matches[oi + 1].start() if oi + 1 < len(option_matches) else len(block)
         full_opt = block[opt_start:opt_end]
-        text = re.sub(r"^\s*\(?[ABC]\)?[\.\)]\s+", "", full_opt).strip()
+        text = re.sub(r"^\s*\(?[ABC]\)?[a-zA-Z]{0,2}[\.\)\,]\s+", "", full_opt).strip()
         opts[letter] = text
     return opts
 
@@ -202,6 +213,12 @@ def split_into_sessions(raw_text: str):
     return regions
 
 
+def strip_header_noise(text: str) -> str:
+    """Removes repeated running-header/footer text that OCR sometimes injects
+    mid-question or mid-option (e.g. 'Mock Exam 1 Session 1 - Questions')."""
+    return HEADER_NOISE_PATTERN.sub(" ", text)
+
+
 def parse_combined_mock(raw_text: str):
     """
     High-level helper: given the full text of a combined multi-session PDF,
@@ -216,8 +233,8 @@ def parse_combined_mock(raw_text: str):
 
     result = {}
     for sess, parts in regions.items():
-        q_text = parts.get("questions_text", "")
-        a_text = parts.get("answers_text", "")
+        q_text = strip_header_noise(parts.get("questions_text", ""))
+        a_text = strip_header_noise(parts.get("answers_text", ""))
         questions = parse_questions(q_text)
         answer_map = parse_answer_key(a_text) if a_text else {}
         questions = merge_answer_key(questions, answer_map)
