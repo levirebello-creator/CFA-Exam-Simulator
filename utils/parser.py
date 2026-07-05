@@ -32,10 +32,11 @@ QUESTION_HEADER_PATTERN = re.compile(r"^\s*Question\s+(\d{1,3})\s*$", re.MULTILI
 #   - a doubled/stray letter right after the real one ("C." misread as "Cc.")
 #   - comma or colon misread in place of the period ("B," / "A:")
 #   - the letter marker in lowercase ("c." instead of "C.")
-#   - other OCR noise glued onto the same line before the marker ("urns C. text")
-#     -- handled by only requiring a preceding whitespace char rather than a
-#        true start-of-line, since OCR often merges what should be separate lines
-OPTION_PATTERN = re.compile(r"(?:^|(?<=\s))\(?([ABCabc])\)?[a-zA-Z]{0,2}[\.\)\,\:]\s+(.*)", re.MULTILINE)
+#   - other OCR noise glued onto the same line before the marker, including
+#     stray symbols like "~ _C." -- only requires that the letter isn't part
+#     of a longer word (i.e. not directly preceded by another letter), rather
+#     than requiring a true line-start or literal whitespace before it
+OPTION_PATTERN = re.compile(r"(?<![A-Za-z])\(?([ABCabc])\)?[a-zA-Z]{0,2}[\.\)\,\:]\s+(.*)", re.MULTILINE)
 
 # ---------- Noise patterns (OCR artifacts to strip before parsing) ----------
 
