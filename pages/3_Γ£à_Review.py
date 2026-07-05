@@ -6,7 +6,7 @@ db.init_db()
 
 st.title("✅ Review Your Attempts")
 
-attempts = [a for a in db.list_attempts() if a["status"] == "completed"]
+attempts = [dict(a) for a in db.list_attempts() if a["status"] == "completed"]
 
 just_finished = st.session_state.pop("last_completed_attempt_id", None)
 

@@ -28,7 +28,7 @@ def reset_exam_state():
             del st.session_state[k]
 
 
-mocks = db.list_mocks()
+mocks = [dict(m) for m in db.list_mocks()]
 if not mocks:
     st.info("No mocks uploaded yet. Go to **Upload Mock** first.")
     st.stop()

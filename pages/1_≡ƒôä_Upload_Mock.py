@@ -41,7 +41,7 @@ if mode == "Create a new mock":
         session_number = st.session_state.get("active_session_number", 1)
 
 else:
-    mocks = db.list_mocks()
+    mocks = [dict(m) for m in db.list_mocks()]
     if not mocks:
         st.info("No mocks exist yet — create one first.")
         st.stop()
