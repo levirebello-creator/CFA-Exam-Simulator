@@ -158,9 +158,28 @@ def split_into_sessions(raw_text: str):
     or None if no such structure is detected (caller should treat the whole
     PDF as a single section instead).
     """
-    matches = [(m.start(), int(m.group(1)), m.group(2).lower()) for m in SESSION_SECTION_PATTERN.finditer(raw_text)]
-    if not matches:
+    raw_matches = list(SESSION_SECTION_PATTERN.finditer(raw_text))
+    if not raw_matches:
         return None
+
+    # Table-of-contents rows look like "...Session 1- Questions    3 - 25" -
+    # i.e. immediately followed by a page-range number. Real section dividers
+    # (either the big standalone divider page, or the running header repeated
+    # on every content page) are never followed by a page range like that.
+    # Filter those out so we don't split on TOC entries.
+    page_range_after = re.compile(r"^\s*\d{1,4}\s*[-\u2013]\s*\d{1,4}")
+    content_matches = []
+    for m in raw_matches:
+        following = raw_text[m.end(): m.end() + 25]
+        if page_range_after.match(following):
+            continue
+        content_matches.append(m)
+
+    # Fall back to unfiltered matches if filtering left nothing useful
+    # (shouldn't normally happen, but avoids silently returning None).
+    use_matches = content_matches if content_matches else raw_matches
+
+    matches = [(m.start(), int(m.group(1)), m.group(2).lower()) for m in use_matches]
 
     first_positions = {}
     for pos, sess, typ in matches:

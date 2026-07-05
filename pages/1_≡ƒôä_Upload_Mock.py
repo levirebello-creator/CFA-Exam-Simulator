@@ -112,7 +112,16 @@ if mock_id:
         tabs = st.tabs([f"Session {s}" for s in sessions_found])
         for tab, sess in zip(tabs, sessions_found):
             with tab:
-                df = pd.DataFrame(st.session_state[combined_key][sess])
+                session_questions = st.session_state[combined_key][sess]
+                if not session_questions:
+                    st.warning(
+                        f"No questions could be detected for Session {sess}. This can happen if the PDF's "
+                        "layout doesn't match what the parser expects. Try uploading this session as a "
+                        "separate file using 'Add a session to an existing mock' instead."
+                    )
+                    continue
+
+                df = pd.DataFrame(session_questions)
                 edited = st.data_editor(
                     df,
                     use_container_width=True,
@@ -146,6 +155,13 @@ if mock_id:
     elif single_key in st.session_state:
         st.subheader("Review & fix before saving")
         st.caption("Fix any misread text/options and fill in missing correct answers (A/B/C). This is the most important step for exam-mixed providers.")
+
+        if not st.session_state[single_key]:
+            st.warning(
+                "No questions could be detected in this PDF. The layout may not match what the parser "
+                "expects yet — check that the file has clearly numbered questions with A/B/C options."
+            )
+            st.stop()
 
         df = pd.DataFrame(st.session_state[single_key])
         edited = st.data_editor(
