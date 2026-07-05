@@ -8,8 +8,10 @@ db.init_db()
 
 st.title("📄 Upload a Mock")
 st.caption(
-    "Since real mocks (CFAI / Kaplan / Wiley...) come as separate AM/PM papers, "
-    "upload **one session at a time**. If a mock has 2 sessions, add the mock once, "
+    "Upload your mock PDF below. If it's a **combined PDF** containing both sessions "
+    "and both answer keys (common with CFA Institute Premium Mocks), the app will "
+    "auto-detect and split both sessions for you. If your provider gives separate "
+    "AM/PM files instead, upload **one session at a time** — create the mock once, "
     "then come back here and add session 2 to the same mock."
 )
 
@@ -72,28 +74,80 @@ if mock_id:
         if used_ocr:
             st.info("Some pages were scanned images — OCR was used to read them. Please double check those questions carefully below.")
 
-        questions = parser.parse_questions(raw_text)
+        # First, check if this is a combined PDF containing multiple sessions
+        # (e.g. CFA Institute "Premium Mock" style: Session 1 Questions, Session 1
+        # Answers, Session 2 Questions, Session 2 Answers all in one file).
+        combined = parser.parse_combined_mock(raw_text)
 
-        answer_map = {}
-        if answer_pdf:
-            ans_text, _ = full_text(answer_pdf.read())
-            answer_map = parser.parse_answer_key(ans_text)
+        if combined:
+            st.success(f"This looks like a combined PDF — detected {len(combined)} session(s) in one file. "
+                       "Review and save each session below.")
+            st.session_state[f"parsed_combined_{mock_id}"] = combined
+            st.session_state.pop(f"parsed_questions_{mock_id}_{session_number}", None)
         else:
-            # maybe the answer key is embedded at the tail of the same PDF
-            tail = raw_text[int(len(raw_text) * 0.7):]
-            answer_map = parser.parse_answer_key(tail)
+            questions = parser.parse_questions(raw_text)
 
-        questions = parser.merge_answer_key(questions, answer_map)
+            answer_map = {}
+            if answer_pdf:
+                ans_text, _ = full_text(answer_pdf.read())
+                answer_map = parser.parse_answer_key(ans_text)
+            else:
+                # maybe the answer key is embedded at the tail of the same PDF
+                tail = raw_text[int(len(raw_text) * 0.7):]
+                answer_map = parser.parse_answer_key(tail)
 
-        st.session_state[f"parsed_questions_{mock_id}_{session_number}"] = questions
-        st.success(f"Extracted {len(questions)} questions, {sum(1 for q in questions if q['correct_answer'])} with answers matched.")
+            questions = parser.merge_answer_key(questions, answer_map)
 
-    key = f"parsed_questions_{mock_id}_{session_number}"
-    if key in st.session_state:
+            st.session_state[f"parsed_questions_{mock_id}_{session_number}"] = questions
+            st.success(f"Extracted {len(questions)} questions, {sum(1 for q in questions if q['correct_answer'])} with answers matched.")
+
+    combined_key = f"parsed_combined_{mock_id}"
+    single_key = f"parsed_questions_{mock_id}_{session_number}"
+
+    if combined_key in st.session_state:
+        st.subheader("Review & fix before saving")
+        st.caption("Fix any misread text/options and fill in missing correct answers (A/B/C) for each session below.")
+
+        sessions_found = sorted(st.session_state[combined_key].keys())
+        tabs = st.tabs([f"Session {s}" for s in sessions_found])
+        for tab, sess in zip(tabs, sessions_found):
+            with tab:
+                df = pd.DataFrame(st.session_state[combined_key][sess])
+                edited = st.data_editor(
+                    df,
+                    use_container_width=True,
+                    num_rows="dynamic",
+                    column_config={
+                        "correct_answer": st.column_config.SelectboxColumn("Correct answer", options=["A", "B", "C", None]),
+                        "q_number": st.column_config.NumberColumn("Q#"),
+                        "question_text": st.column_config.TextColumn("Question", width="large"),
+                        "option_a": st.column_config.TextColumn("Option A", width="medium"),
+                        "option_b": st.column_config.TextColumn("Option B", width="medium"),
+                        "option_c": st.column_config.TextColumn("Option C", width="medium"),
+                        "topic": st.column_config.TextColumn("Topic (optional)"),
+                    },
+                    key=f"editor_combined_{mock_id}_{sess}",
+                )
+
+                missing = edited["correct_answer"].isna().sum() + (edited["correct_answer"] == "").sum()
+                if missing:
+                    st.warning(f"{missing} question(s) in Session {sess} still have no correct answer set.")
+
+                if st.button(f"💾 Save Session {sess} to the database", type="primary", key=f"save_combined_{mock_id}_{sess}"):
+                    questions_to_save = edited.to_dict("records")
+                    for q in questions_to_save:
+                        if not q.get("correct_answer"):
+                            q["correct_answer"] = None
+                    db.bulk_insert_questions(mock_id, int(sess), questions_to_save)
+                    st.success(f"Saved {len(questions_to_save)} questions for Session {sess}. "
+                               "Go to **Take Exam** in the sidebar when you're ready to sit it.")
+                    st.balloons()
+
+    elif single_key in st.session_state:
         st.subheader("Review & fix before saving")
         st.caption("Fix any misread text/options and fill in missing correct answers (A/B/C). This is the most important step for exam-mixed providers.")
 
-        df = pd.DataFrame(st.session_state[key])
+        df = pd.DataFrame(st.session_state[single_key])
         edited = st.data_editor(
             df,
             use_container_width=True,
@@ -121,7 +175,7 @@ if mock_id:
                 if not q.get("correct_answer"):
                     q["correct_answer"] = None
             db.bulk_insert_questions(mock_id, int(session_number), questions_to_save)
-            del st.session_state[key]
+            del st.session_state[single_key]
             st.success(f"Saved {len(questions_to_save)} questions for session {session_number}. "
                        "Go to **Take Exam** in the sidebar when you're ready to sit it.")
             st.balloons()
