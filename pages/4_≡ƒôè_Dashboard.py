@@ -27,6 +27,25 @@ with st.expander("💾 Backup / Restore your data (important on Streamlit Cloud)
 
 
 mocks = db.list_mocks()
+
+with st.expander("🗑️ Manage / delete mocks"):
+    if not mocks:
+        st.caption("No mocks uploaded yet.")
+    else:
+        mocks_as_dicts = [dict(m) for m in mocks]
+        mock_to_delete = st.selectbox(
+            "Select a mock to delete",
+            mocks_as_dicts,
+            format_func=lambda m: f"{m['name']} ({m['provider'] or 'n/a'})",
+            key="mock_delete_select",
+        )
+        st.caption("This permanently deletes the mock, all its questions, and all attempt history for it.")
+        confirm = st.checkbox(f"I understand this will permanently delete '{mock_to_delete['name']}'", key="confirm_delete_mock")
+        if st.button("🗑️ Delete this mock", type="primary", disabled=not confirm):
+            db.delete_mock(mock_to_delete["id"])
+            st.success(f"Deleted '{mock_to_delete['name']}'.")
+            st.rerun()
+
 attempts = db.list_attempts()
 completed = [a for a in attempts if a["status"] == "completed"]
 
