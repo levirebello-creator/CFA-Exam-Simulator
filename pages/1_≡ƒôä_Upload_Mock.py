@@ -145,12 +145,27 @@ if mock_id:
 
                 if st.button(f"💾 Save Session {sess} to the database", type="primary", key=f"save_combined_{mock_id}_{sess}"):
                     questions_to_save = edited.to_dict("records")
+                    excluded_nums = []
                     for q in questions_to_save:
                         if not q.get("correct_answer"):
                             q["correct_answer"] = None
+                        if db.is_question_incomplete(q):
+                            q["active"] = 0
+                            excluded_nums.append(q.get("q_number"))
+                        else:
+                            q["active"] = 1
                     db.bulk_insert_questions(mock_id, int(sess), questions_to_save)
-                    st.success(f"Saved {len(questions_to_save)} questions for Session {sess}. "
-                               "Go to **Take Exam** in the sidebar when you're ready to sit it.")
+                    if excluded_nums:
+                        st.warning(
+                            f"Saved {len(questions_to_save)} questions for Session {sess}, but "
+                            f"{len(excluded_nums)} had missing text/options/answer and were excluded from "
+                            f"this session's exam so they won't interrupt you mid-mock: "
+                            f"Q{', Q'.join(str(n) for n in excluded_nums)}. They're still saved — fix and "
+                            "re-include them anytime in the 'Fix excluded questions' section below."
+                        )
+                    else:
+                        st.success(f"Saved {len(questions_to_save)} questions for Session {sess}. "
+                                   "Go to **Take Exam** in the sidebar when you're ready to sit it.")
                     st.balloons()
 
     elif single_key in st.session_state:
@@ -188,11 +203,76 @@ if mock_id:
 
         if st.button("💾 Save this session to the database", type="primary"):
             questions_to_save = edited.to_dict("records")
+            excluded_nums = []
             for q in questions_to_save:
                 if not q.get("correct_answer"):
                     q["correct_answer"] = None
+                if db.is_question_incomplete(q):
+                    q["active"] = 0
+                    excluded_nums.append(q.get("q_number"))
+                else:
+                    q["active"] = 1
             db.bulk_insert_questions(mock_id, int(session_number), questions_to_save)
             del st.session_state[single_key]
-            st.success(f"Saved {len(questions_to_save)} questions for session {session_number}. "
-                       "Go to **Take Exam** in the sidebar when you're ready to sit it.")
+            if excluded_nums:
+                st.warning(
+                    f"Saved {len(questions_to_save)} questions for session {session_number}, but "
+                    f"{len(excluded_nums)} had missing text/options/answer and were excluded from this "
+                    f"session's exam so they won't interrupt you mid-mock: "
+                    f"Q{', Q'.join(str(n) for n in excluded_nums)}. They're still saved — fix and "
+                    "re-include them anytime in the 'Fix excluded questions' section below."
+                )
+            else:
+                st.success(f"Saved {len(questions_to_save)} questions for session {session_number}. "
+                           "Go to **Take Exam** in the sidebar when you're ready to sit it.")
             st.balloons()
+
+if mock_id:
+    st.divider()
+    st.subheader("🔧 Fix excluded questions")
+    st.caption(
+        "Questions that were saved but excluded for missing data (text, an option, or the correct answer) "
+        "live here. Fix a row and it automatically rejoins the exam next time you save."
+    )
+    m_for_fix = db.get_mock(mock_id)
+    any_excluded = False
+    for sess_n in range(1, int(m_for_fix["num_sessions"]) + 1):
+        excluded = [dict(q) for q in db.get_excluded_questions(mock_id, sess_n)]
+        if not excluded:
+            continue
+        any_excluded = True
+        with st.expander(f"Session {sess_n} — {len(excluded)} excluded question(s)"):
+            edf = pd.DataFrame(excluded)
+            edited_excluded = st.data_editor(
+                edf,
+                use_container_width=True,
+                column_config={
+                    "id": None,
+                    "mock_id": None,
+                    "session_number": None,
+                    "active": None,
+                    "q_number": st.column_config.NumberColumn("Q#", disabled=True),
+                    "question_text": st.column_config.TextColumn("Question", width="large"),
+                    "option_a": st.column_config.TextColumn("Option A", width="medium"),
+                    "option_b": st.column_config.TextColumn("Option B", width="medium"),
+                    "option_c": st.column_config.TextColumn("Option C", width="medium"),
+                    "correct_answer": st.column_config.SelectboxColumn("Correct answer", options=["A", "B", "C", None]),
+                    "topic": st.column_config.TextColumn("Topic (optional)"),
+                },
+                hide_index=True,
+                key=f"fix_excluded_{mock_id}_{sess_n}",
+            )
+            if st.button("✅ Save fixes & re-include completed ones", key=f"reinclude_{mock_id}_{sess_n}"):
+                rows = edited_excluded.to_dict("records")
+                reincluded = 0
+                for r in rows:
+                    complete = not db.is_question_incomplete(r)
+                    db.update_question(
+                        r["id"], r["question_text"], r["option_a"], r["option_b"], r["option_c"],
+                        r.get("correct_answer") or None, r.get("topic") or None, 1 if complete else 0,
+                    )
+                    reincluded += complete
+                st.success(f"{reincluded} of {len(rows)} question(s) fixed and re-included in the exam.")
+                st.rerun()
+    if not any_excluded:
+        st.caption("No excluded questions for this mock right now.")

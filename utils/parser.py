@@ -170,6 +170,47 @@ def parse_answer_key(raw_text: str):
     return answers
 
 
+def parse_answer_key_with_explanations(raw_text: str):
+    """
+    Like parse_answer_key, but also captures any rationale/explanation text
+    that follows the correct-answer line in "Answer N" style keys (some
+    question banks include a paragraph explaining why the answer is
+    correct, beyond just restating the option text).
+
+    Returns {q_number: {"correct_answer": "A"/"B"/"C", "explanation": str}}.
+    Only the "Answer N" header style carries explanations in practice -- the
+    inline "N. B" fallback style has no room for rationale text, so it always
+    comes back with an empty explanation.
+    """
+    header_matches = list(ANSWER_HEADER_PATTERN.finditer(raw_text))
+    if len(header_matches) >= 3:
+        results = {}
+        for idx, m in enumerate(header_matches):
+            q_num = int(m.group(1))
+            start = m.end()
+            end = header_matches[idx + 1].start() if idx + 1 < len(header_matches) else len(raw_text)
+            block = raw_text[start:end]
+            letter_match = re.search(r"^\s*\(?([ABCabc])\)?[a-zA-Z]{0,2}[\.\)\,\:]\s+", block, re.MULTILINE)
+            if not letter_match:
+                continue
+            line_end = block.find("\n", letter_match.end())
+            explanation = block[line_end:].strip() if line_end != -1 else ""
+            results[q_num] = {"correct_answer": letter_match.group(1).upper(), "explanation": explanation}
+        if results:
+            return results
+
+    # Fallback inline styles ("1. B") never carry rationale text.
+    return {q: {"correct_answer": letter, "explanation": ""} for q, letter in parse_answer_key(raw_text).items()}
+
+
+def merge_answer_key_with_explanations(questions, answer_map):
+    for q in questions:
+        info = answer_map.get(q["q_number"])
+        q["correct_answer"] = info.get("correct_answer") if info else None
+        q["explanation"] = info.get("explanation", "") if info else ""
+    return questions
+
+
 def merge_answer_key(questions, answer_map):
     for q in questions:
         if q["q_number"] in answer_map:
