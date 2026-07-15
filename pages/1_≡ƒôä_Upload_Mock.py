@@ -93,8 +93,8 @@ if mock_id:
                 ans_text, _ = full_text(answer_pdf.read())
                 answer_map = parser.parse_answer_key(parser.strip_header_noise(ans_text))
             else:
-                # maybe the answer key is embedded at the tail of the same PDF
-                tail = raw_text_clean[int(len(raw_text_clean) * 0.7):]
+                # maybe the answer key is embedded further down in the same PDF
+                tail = parser.find_embedded_answer_key(raw_text_clean)
                 answer_map = parser.parse_answer_key(tail)
 
             questions = parser.merge_answer_key(questions, answer_map)

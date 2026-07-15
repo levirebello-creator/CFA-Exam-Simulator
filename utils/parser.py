@@ -54,6 +54,15 @@ HEADER_NOISE_PATTERN = re.compile(
     r"Mock\s*Exam\s*\d+\s*Session\s*\d[\s\-]*(Questions|Answers)", re.IGNORECASE
 )
 
+# Some QBank-style providers repeat "of <total>" plus a redundant label line
+# (and "Solution" for answers) right after "Question N"/"Answer N", e.g.
+# "Question 1 of 106\nQuestion\n<stem>" or "Answer 1 of 106\nAnswer\nSolution\n<text>".
+# The lookbehind restricts this to right after a header's number so it can't
+# match "of <n>" occurring naturally elsewhere in question text.
+QUESTION_OF_TOTAL_NOISE_PATTERN = re.compile(
+    r"(?<=\d)\s+of\s+\d{1,4}\s*\n\s*(Question|Answer)\s*\n(\s*Solution\s*\n)?", re.IGNORECASE
+)
+
 # ---------- Answer key patterns ----------
 
 # Style A: "1. B", "1) B", "1 - B", "1: B" all on one line
@@ -140,6 +149,50 @@ def _extract_options(block, option_matches):
     return opts
 
 
+# Some QBank-style answer keys explain *every* option rather than just
+# restating the correct one, e.g. "A. Incorrect because...\nB. Incorrect
+# because...\nC. Correct. ...". "Incorrect" contains "correct" as a
+# substring but never at a word boundary, so \bCorrect\b safely distinguishes
+# the two without extra bookkeeping.
+_CORRECT_MARK = re.compile(r"\bCorrect\b", re.IGNORECASE)
+_INCORRECT_MARK = re.compile(r"\bIncorrect\b", re.IGNORECASE)
+
+
+def _extract_answer_from_block(block):
+    """
+    Finds the correct-answer letter (and, if available, an explanation) in
+    one "Answer N" block. Two block styles are supported:
+      - Restates only the correct option, e.g. "A. No" -- that option's
+        letter is the answer, and any text after that line is captured as
+        an optional explanation.
+      - Explains every option, e.g. "A. Incorrect because...\nB. Incorrect
+        because...\nC. Correct. ..." -- the option explicitly marked
+        "Correct" (not "Incorrect") is the answer, and the whole block
+        (every option's reasoning) becomes the explanation, so the reasoning
+        for every choice -- not just the right one -- is visible on review.
+    Returns (letter, explanation), or (None, "") if no option line is found.
+    """
+    option_matches = list(OPTION_PATTERN.finditer(block))
+    if not option_matches:
+        return None, ""
+
+    for oi, om in enumerate(option_matches):
+        opt_start = om.start()
+        opt_end = option_matches[oi + 1].start() if oi + 1 < len(option_matches) else len(block)
+        opt_text = block[opt_start:opt_end]
+        if _INCORRECT_MARK.search(opt_text):
+            continue
+        if _CORRECT_MARK.search(opt_text):
+            return om.group(1).upper(), block[option_matches[0].start():].strip()
+
+    # No option explicitly marked Correct/Incorrect -- assume the single
+    # restated line found is the correct option (the common CFA-mock style).
+    first = option_matches[0]
+    line_end = block.find("\n", first.end())
+    explanation = block[line_end:].strip() if line_end != -1 else ""
+    return first.group(1).upper(), explanation
+
+
 def parse_answer_key(raw_text: str):
     """
     Returns a dict {q_number: 'A'/'B'/'C'} parsed from an answer-key style text
@@ -154,10 +207,9 @@ def parse_answer_key(raw_text: str):
             q_num = int(m.group(1))
             start = m.end()
             end = header_matches[idx + 1].start() if idx + 1 < len(header_matches) else len(raw_text)
-            block = raw_text[start:end]
-            letter_match = re.search(r"^\s*\(?([ABCabc])\)?[a-zA-Z]{0,2}[\.\)\,\:]\s+", block, re.MULTILINE)
-            if letter_match:
-                answers[q_num] = letter_match.group(1).upper()
+            letter, _ = _extract_answer_from_block(raw_text[start:end])
+            if letter:
+                answers[q_num] = letter
         if answers:
             return answers
 
@@ -172,10 +224,9 @@ def parse_answer_key(raw_text: str):
 
 def parse_answer_key_with_explanations(raw_text: str):
     """
-    Like parse_answer_key, but also captures any rationale/explanation text
-    that follows the correct-answer line in "Answer N" style keys (some
-    question banks include a paragraph explaining why the answer is
-    correct, beyond just restating the option text).
+    Like parse_answer_key, but also captures a rationale/explanation for
+    each question (see _extract_answer_from_block for the two block styles
+    this handles).
 
     Returns {q_number: {"correct_answer": "A"/"B"/"C", "explanation": str}}.
     Only the "Answer N" header style carries explanations in practice -- the
@@ -189,13 +240,10 @@ def parse_answer_key_with_explanations(raw_text: str):
             q_num = int(m.group(1))
             start = m.end()
             end = header_matches[idx + 1].start() if idx + 1 < len(header_matches) else len(raw_text)
-            block = raw_text[start:end]
-            letter_match = re.search(r"^\s*\(?([ABCabc])\)?[a-zA-Z]{0,2}[\.\)\,\:]\s+", block, re.MULTILINE)
-            if not letter_match:
+            letter, explanation = _extract_answer_from_block(raw_text[start:end])
+            if not letter:
                 continue
-            line_end = block.find("\n", letter_match.end())
-            explanation = block[line_end:].strip() if line_end != -1 else ""
-            results[q_num] = {"correct_answer": letter_match.group(1).upper(), "explanation": explanation}
+            results[q_num] = {"correct_answer": letter, "explanation": explanation}
         if results:
             return results
 
@@ -209,6 +257,26 @@ def merge_answer_key_with_explanations(questions, answer_map):
         q["correct_answer"] = info.get("correct_answer") if info else None
         q["explanation"] = info.get("explanation", "") if info else ""
     return questions
+
+
+def find_embedded_answer_key(raw_text: str) -> str:
+    """
+    Given the full text of a single-section PDF (questions + an answer key
+    in the same file, no "Session N" markers to split on), returns just the
+    answer-key portion.
+
+    Locates the first "Answer N" header and takes everything from there
+    onward. This matters because providers that include a rationale
+    paragraph per answer (QBank-style) can have an answer-key section far
+    larger than the question section -- a fixed "last N% of the document"
+    guess badly undershoots and misses most answers in that case. Falls back
+    to the last 30% of the text if no "Answer N" header style is present
+    (e.g. an inline "1. B" style key, which has no clear section marker).
+    """
+    header_matches = list(ANSWER_HEADER_PATTERN.finditer(raw_text))
+    if len(header_matches) >= 3:
+        return raw_text[header_matches[0].start():]
+    return raw_text[int(len(raw_text) * 0.7):]
 
 
 def merge_answer_key(questions, answer_map):
@@ -276,8 +344,12 @@ def split_into_sessions(raw_text: str):
 
 def strip_header_noise(text: str) -> str:
     """Removes repeated running-header/footer text that OCR sometimes injects
-    mid-question or mid-option (e.g. 'Mock Exam 1 Session 1 - Questions')."""
-    return HEADER_NOISE_PATTERN.sub(" ", text)
+    mid-question or mid-option (e.g. 'Mock Exam 1 Session 1 - Questions'),
+    and "N of <total>" + redundant label-line boilerplate some QBank
+    providers repeat right after every "Question N"/"Answer N" header."""
+    text = HEADER_NOISE_PATTERN.sub(" ", text)
+    text = QUESTION_OF_TOTAL_NOISE_PATTERN.sub(" ", text)
+    return text
 
 
 def parse_combined_mock(raw_text: str):
