@@ -24,19 +24,27 @@ NUMBERED_ITEM_PATTERN = re.compile(
     r"^\s*(?:Q(?:uestion)?\.?\s*)?(\d{1,3})[\.\)]\s+", re.MULTILINE
 )
 
-# Style B: "Question 1" alone on its own line (no trailing period), text starts on the next line
-QUESTION_HEADER_PATTERN = re.compile(r"^\s*Question\s+(\d{1,3})\s*$", re.MULTILINE)
+# Style B: "Question 1" alone on its own line. Real-world OCR of exam PDFs
+# very often glues stray noise onto the same line (a stray "|" from a table
+# border, a misread trailing ":" or ".", or bleed-through text from an
+# adjacent column) -- e.g. "Question 3 |" or "Question 14 Que". Requiring the
+# line to be *exactly* "Question N" causes those headers to be silently
+# skipped, which merges that whole question into the previous one. So we only
+# require that "Question" isn't glued onto a preceding word (same tolerance
+# OPTION_PATTERN uses below) and don't anchor the end of the line at all.
+QUESTION_HEADER_PATTERN = re.compile(r"(?<![A-Za-z])Question\s+(\d{1,3})\b", re.MULTILINE)
 
 # Matches an option line, e.g. "A. text", "(A) text", "A) text"
 # Tolerant of common OCR artifacts seen in real scans:
 #   - a doubled/stray letter right after the real one ("C." misread as "Cc.")
 #   - comma or colon misread in place of the period ("B," / "A:")
 #   - the letter marker in lowercase ("c." instead of "C.")
-#   - other OCR noise glued onto the same line before the marker, including
-#     stray symbols like "~ _C." -- only requires that the letter isn't part
-#     of a longer word (i.e. not directly preceded by another letter), rather
-#     than requiring a true line-start or literal whitespace before it
-OPTION_PATTERN = re.compile(r"(?<![A-Za-z])\(?([ABCabc])\)?[a-zA-Z]{0,2}[\.\)\,\:]\s+(.*)", re.MULTILINE)
+# Anchored to the start of a line (ignoring leading whitespace) because CFA
+# question stems routinely contain "<Name>, CFA, ..." -- without a line
+# anchor, "CFA," itself matches this pattern (letter "C" + stray "FA" +
+# comma) and gets mistaken for option C's marker, truncating the stem and
+# clobbering the real options.
+OPTION_PATTERN = re.compile(r"^[ \t]*\(?([ABCabc])\)?[a-zA-Z]{0,2}[\.\)\,\:]\s+(.*)", re.MULTILINE)
 
 # ---------- Noise patterns (OCR artifacts to strip before parsing) ----------
 
@@ -52,8 +60,9 @@ HEADER_NOISE_PATTERN = re.compile(
 ANSWER_KEY_LINE = re.compile(r"^\s*(\d{1,3})[\.\)\-:]?\s*([ABC])\s*$", re.MULTILINE)
 ANSWER_KEY_LINE_LOOSE = re.compile(r"(\d{1,3})\s*[\.\)\-:]\s*([ABC])\b")
 
-# Style B: "Answer 1" alone on its own line
-ANSWER_HEADER_PATTERN = re.compile(r"^\s*Answer\s+(\d{1,3})\s*$", re.MULTILINE)
+# Style B: "Answer 1" alone on its own line. Same OCR-noise tolerance as
+# QUESTION_HEADER_PATTERN above (trailing "|"/":"/"." noise is common).
+ANSWER_HEADER_PATTERN = re.compile(r"(?<![A-Za-z])Answer\s+(\d{1,3})\b", re.MULTILINE)
 
 # ---------- Session-splitting pattern (for combined 2-session PDFs) ----------
 
@@ -114,9 +123,15 @@ def _parse_with_pattern(raw_text, matches):
 
 
 def _extract_options(block, option_matches):
+    # Keep only the *first* occurrence of each letter. If a question header
+    # upstream failed to match (merging two questions' text into one block),
+    # this stops the second question's options from silently overwriting the
+    # first question's real options.
     opts = {"A": "", "B": "", "C": ""}
     for oi, om in enumerate(option_matches):
         letter = om.group(1).upper()
+        if opts[letter]:
+            continue
         opt_start = om.start()
         opt_end = option_matches[oi + 1].start() if oi + 1 < len(option_matches) else len(block)
         full_opt = block[opt_start:opt_end]
