@@ -70,8 +70,13 @@ ANSWER_KEY_LINE = re.compile(r"^\s*(\d{1,3})[\.\)\-:]?\s*([ABC])\s*$", re.MULTIL
 ANSWER_KEY_LINE_LOOSE = re.compile(r"(\d{1,3})\s*[\.\)\-:]\s*([ABC])\b")
 
 # Style B: "Answer 1" alone on its own line. Same OCR-noise tolerance as
-# QUESTION_HEADER_PATTERN above (trailing "|"/":"/"." noise is common).
-ANSWER_HEADER_PATTERN = re.compile(r"(?<![A-Za-z])Answer\s+(\d{1,3})\b", re.MULTILINE)
+# QUESTION_HEADER_PATTERN above (trailing "|"/":"/"." noise is common), plus
+# an optional trailing "s" ("Answers 1") -- some scans consistently misread
+# the header this way for an entire session while getting it right elsewhere
+# in the same document, silently zeroing out that session's answer key.
+# "Answers N" is specific enough (requires a number right after) that this
+# doesn't meaningfully risk matching ordinary prose.
+ANSWER_HEADER_PATTERN = re.compile(r"(?<![A-Za-z])Answers?\s+(\d{1,3})\b", re.MULTILINE)
 
 # ---------- Session-splitting pattern (for combined 2-session PDFs) ----------
 
@@ -167,23 +172,33 @@ def _extract_answer_from_block(block):
         an optional explanation.
       - Explains every option, e.g. "A. Incorrect because...\nB. Incorrect
         because...\nC. Correct. ..." -- the option explicitly marked
-        "Correct" (not "Incorrect") is the answer, and the whole block
-        (every option's reasoning) becomes the explanation, so the reasoning
-        for every choice -- not just the right one -- is visible on review.
+        "Correct" (not "Incorrect") is the answer, and the whole "A/B/C"
+        run it belongs to becomes the explanation, so the reasoning for
+        every choice -- not just the right one -- is visible on review.
+
+    Some providers restate the plain options *before* the Correct/Incorrect
+    explanations in the same block (i.e. two separate A/B/C runs). Each new
+    "A" match starts a fresh run, so the explanation is sliced from the run
+    that actually contains the Correct/Incorrect verdict, not from
+    whichever "A" happens to appear first in the block.
+
     Returns (letter, explanation), or (None, "") if no option line is found.
     """
     option_matches = list(OPTION_PATTERN.finditer(block))
     if not option_matches:
         return None, ""
 
+    run_start = 0
     for oi, om in enumerate(option_matches):
+        if om.group(1).upper() == "A":
+            run_start = oi
         opt_start = om.start()
         opt_end = option_matches[oi + 1].start() if oi + 1 < len(option_matches) else len(block)
         opt_text = block[opt_start:opt_end]
         if _INCORRECT_MARK.search(opt_text):
             continue
         if _CORRECT_MARK.search(opt_text):
-            return om.group(1).upper(), block[option_matches[0].start():].strip()
+            return om.group(1).upper(), block[option_matches[run_start].start():].strip()
 
     # No option explicitly marked Correct/Incorrect -- assume the single
     # restated line found is the correct option (the common CFA-mock style).
@@ -193,26 +208,40 @@ def _extract_answer_from_block(block):
     return first.group(1).upper(), explanation
 
 
+def _answers_from_header_pattern(raw_text, header_pattern):
+    """Runs _extract_answer_from_block over every block delimited by
+    header_pattern, returning {q_number: (letter, explanation)}."""
+    header_matches = list(header_pattern.finditer(raw_text))
+    if len(header_matches) < 3:
+        return {}
+    results = {}
+    for idx, m in enumerate(header_matches):
+        q_num = int(m.group(1))
+        start = m.end()
+        end = header_matches[idx + 1].start() if idx + 1 < len(header_matches) else len(raw_text)
+        letter, explanation = _extract_answer_from_block(raw_text[start:end])
+        if letter:
+            results[q_num] = (letter, explanation)
+    return results
+
+
 def parse_answer_key(raw_text: str):
     """
     Returns a dict {q_number: 'A'/'B'/'C'} parsed from an answer-key style text
     (either a standalone answer key PDF, or a section of a combined mock PDF).
 
-    Tries "Answer N" header style first, falls back to inline "N. B" style.
+    Tries "Answer N" header style first. Some providers instead restate
+    "Question N" as the delimiter inside a standalone answer-key PDF (the
+    question paper and the answer key both use "Question N", just in
+    different files), so that's tried next. Finally falls back to inline
+    "N. B" style.
     """
-    answers = {}
-    header_matches = list(ANSWER_HEADER_PATTERN.finditer(raw_text))
-    if len(header_matches) >= 3:
-        for idx, m in enumerate(header_matches):
-            q_num = int(m.group(1))
-            start = m.end()
-            end = header_matches[idx + 1].start() if idx + 1 < len(header_matches) else len(raw_text)
-            letter, _ = _extract_answer_from_block(raw_text[start:end])
-            if letter:
-                answers[q_num] = letter
-        if answers:
-            return answers
+    for pattern in (ANSWER_HEADER_PATTERN, QUESTION_HEADER_PATTERN):
+        found = _answers_from_header_pattern(raw_text, pattern)
+        if found:
+            return {q: letter for q, (letter, _) in found.items()}
 
+    answers = {}
     for m in ANSWER_KEY_LINE.finditer(raw_text):
         answers[int(m.group(1))] = m.group(2)
     if len(answers) < 5:  # fall back to a looser pattern if strict one found almost nothing
@@ -226,26 +255,18 @@ def parse_answer_key_with_explanations(raw_text: str):
     """
     Like parse_answer_key, but also captures a rationale/explanation for
     each question (see _extract_answer_from_block for the two block styles
-    this handles).
+    this handles, and parse_answer_key for the header styles tried).
 
     Returns {q_number: {"correct_answer": "A"/"B"/"C", "explanation": str}}.
-    Only the "Answer N" header style carries explanations in practice -- the
-    inline "N. B" fallback style has no room for rationale text, so it always
-    comes back with an empty explanation.
+    Only the "Answer N" / "Question N" header styles carry explanations in
+    practice -- the inline "N. B" fallback style has no room for rationale
+    text, so it always comes back with an empty explanation.
     """
-    header_matches = list(ANSWER_HEADER_PATTERN.finditer(raw_text))
-    if len(header_matches) >= 3:
-        results = {}
-        for idx, m in enumerate(header_matches):
-            q_num = int(m.group(1))
-            start = m.end()
-            end = header_matches[idx + 1].start() if idx + 1 < len(header_matches) else len(raw_text)
-            letter, explanation = _extract_answer_from_block(raw_text[start:end])
-            if not letter:
-                continue
-            results[q_num] = {"correct_answer": letter, "explanation": explanation}
-        if results:
-            return results
+    for pattern in (ANSWER_HEADER_PATTERN, QUESTION_HEADER_PATTERN):
+        found = _answers_from_header_pattern(raw_text, pattern)
+        if found:
+            return {q: {"correct_answer": letter, "explanation": explanation}
+                     for q, (letter, explanation) in found.items()}
 
     # Fallback inline styles ("1. B") never carry rationale text.
     return {q: {"correct_answer": letter, "explanation": ""} for q, letter in parse_answer_key(raw_text).items()}

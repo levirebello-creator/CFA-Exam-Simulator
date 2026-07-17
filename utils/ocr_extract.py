@@ -13,6 +13,13 @@ import io
 MIN_CHARS_FOR_NATIVE = 40  # below this, assume the page is a scanned image
 OCR_DPI = 400  # higher DPI meaningfully improves Tesseract accuracy on scanned exam pages
 
+# Pages are rasterized this many at a time rather than all at once. A 100+
+# page scan held entirely in memory as 400 DPI images can use several GB;
+# batching bounds peak memory to roughly this many pages regardless of how
+# long the document is, which matters a lot when running several uploads
+# concurrently.
+OCR_BATCH_SIZE = 10
+
 # --psm 6 = "assume a single uniform block of text", which suits a typical
 # single-column exam page much better than Tesseract's default mode (which
 # tries to detect complex multi-column layouts and can scramble line order).
@@ -62,8 +69,7 @@ def extract_pages_text(pdf_bytes: bytes, progress_callback=None):
     which pages might need extra scrutiny).
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    page_texts = []
-    ocr_used = []
+    total = len(doc)
 
     # First pass: try native extraction on every page
     native_texts = []
@@ -73,20 +79,30 @@ def extract_pages_text(pdf_bytes: bytes, progress_callback=None):
         native_texts.append(text)
         if len(text.strip()) < MIN_CHARS_FOR_NATIVE:
             pages_needing_ocr.append(i)
+    doc.close()
 
-    ocr_images = {}
+    ocr_results = {}
     if pages_needing_ocr:
-        # Convert only the pages that need it, at a higher DPI for OCR accuracy
-        images = convert_from_bytes(pdf_bytes, dpi=OCR_DPI)
-        for i in pages_needing_ocr:
-            ocr_images[i] = images[i]
+        needing_set = set(pages_needing_ocr)
+        lo, hi = min(pages_needing_ocr), max(pages_needing_ocr)
+        page_num = lo
+        while page_num <= hi:
+            batch_last = min(page_num + OCR_BATCH_SIZE - 1, hi)
+            # pdf2image's first_page/last_page are 1-indexed.
+            images = convert_from_bytes(
+                pdf_bytes, dpi=OCR_DPI, first_page=page_num + 1, last_page=batch_last + 1
+            )
+            for offset, image in enumerate(images):
+                idx = page_num + offset
+                if idx in needing_set:
+                    ocr_results[idx] = _ocr_image(_preprocess_for_ocr(image))
+            page_num = batch_last + 1
 
-    total = len(doc)
+    page_texts = []
+    ocr_used = []
     for i in range(total):
-        if i in ocr_images:
-            processed = _preprocess_for_ocr(ocr_images[i])
-            text = _ocr_image(processed)
-            page_texts.append(text)
+        if i in ocr_results:
+            page_texts.append(ocr_results[i])
             ocr_used.append(True)
         else:
             page_texts.append(native_texts[i])
@@ -94,7 +110,6 @@ def extract_pages_text(pdf_bytes: bytes, progress_callback=None):
         if progress_callback:
             progress_callback((i + 1) / total)
 
-    doc.close()
     return page_texts, ocr_used
 
 
