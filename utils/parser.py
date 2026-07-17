@@ -36,15 +36,28 @@ QUESTION_HEADER_PATTERN = re.compile(r"(?<![A-Za-z])Question\s+(\d{1,3})\b", re.
 
 # Matches an option line, e.g. "A. text", "(A) text", "A) text"
 # Tolerant of common OCR artifacts seen in real scans:
-#   - a doubled/stray letter right after the real one ("C." misread as "Cc.")
-#   - comma or colon misread in place of the period ("B," / "A:")
+#   - comma misread in place of the period ("B,")
 #   - the letter marker in lowercase ("c." instead of "C.")
-# Anchored to the start of a line (ignoring leading whitespace) because CFA
-# question stems routinely contain "<Name>, CFA, ..." -- without a line
-# anchor, "CFA," itself matches this pattern (letter "C" + stray "FA" +
-# comma) and gets mistaken for option C's marker, truncating the stem and
-# clobbering the real options.
-OPTION_PATTERN = re.compile(r"^[ \t]*\(?([ABCabc])\)?[a-zA-Z]{0,2}[\.\)\,\:]\s+(.*)", re.MULTILINE)
+#   - stray bleed-through text from an adjacent column glued onto the same
+#     line before the marker ("Hoda is A. the nature..."), or a stray
+#     leading symbol from a misread table border (": A. less than...") --
+#     only requires that the letter isn't part of a longer word (i.e. not
+#     directly preceded by another letter), not a true line start.
+#
+# Deliberately requires the punctuation to come *immediately* after the
+# single option letter, with no stray letters tolerated in between. CFA
+# question stems routinely contain "<Name>, CFA, ..." -- allowing even one
+# or two stray letters between the letter and the punctuation lets "CFA,"
+# itself match this pattern (letter "C" + "FA" + comma) and get mistaken for
+# option C's marker, truncating the stem and clobbering the real options.
+#
+# Colon is deliberately NOT an accepted marker punctuation. Unlike the
+# others, "letter + colon" collides constantly with ordinary English --
+# "...is best described as a:", "...known as a:" -- where the lowercase
+# word "a" followed by a colon reads exactly like an option-a marker. In
+# real scans this false-positive was far more common than genuine "A:"
+# markers (which are usually a misread "A." anyway).
+OPTION_PATTERN = re.compile(r"(?<![A-Za-z])\(?([ABCabc])\)?[\.\)\,]\s+(.*)", re.MULTILINE)
 
 # ---------- Noise patterns (OCR artifacts to strip before parsing) ----------
 
@@ -149,7 +162,7 @@ def _extract_options(block, option_matches):
         opt_start = om.start()
         opt_end = option_matches[oi + 1].start() if oi + 1 < len(option_matches) else len(block)
         full_opt = block[opt_start:opt_end]
-        text = re.sub(r"^\(?[ABCabc]\)?[a-zA-Z]{0,2}[\.\)\,\:]\s+", "", full_opt).strip()
+        text = re.sub(r"^\(?[ABCabc]\)?[\.\)\,]\s+", "", full_opt).strip()
         opts[letter] = text
     return opts
 
