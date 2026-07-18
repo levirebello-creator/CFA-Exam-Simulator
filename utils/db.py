@@ -47,7 +47,8 @@ def init_db():
             option_c TEXT,
             correct_answer TEXT,
             topic TEXT,
-            active INTEGER NOT NULL DEFAULT 1
+            active INTEGER NOT NULL DEFAULT 1,
+            explanation TEXT
         );
 
         CREATE TABLE IF NOT EXISTS attempts (
@@ -111,10 +112,12 @@ def init_db():
         );
         """)
 
-        # Migration for DBs created before the `active` column existed.
+        # Migration for DBs created before the `active`/`explanation` columns existed.
         existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(questions)").fetchall()}
         if "active" not in existing_cols:
             conn.execute("ALTER TABLE questions ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+        if "explanation" not in existing_cols:
+            conn.execute("ALTER TABLE questions ADD COLUMN explanation TEXT")
 
 
 # ---------- Mocks ----------
@@ -148,12 +151,13 @@ def delete_mock(mock_id):
 
 def bulk_insert_questions(mock_id, session_number, questions):
     """questions: list of dicts with keys q_number, question_text, option_a/b/c, correct_answer, topic,
-    and optionally active (defaults to 1 -- used to save-but-exclude incomplete questions)."""
+    and optionally active (defaults to 1 -- used to save-but-exclude incomplete questions) and
+    explanation (optional rationale text, shown in Review for wrong answers)."""
     with get_conn() as conn:
         conn.executemany(
-            "INSERT INTO questions (mock_id, session_number, q_number, question_text, option_a, option_b, option_c, correct_answer, topic, active)"
-            " VALUES (:mock_id, :session_number, :q_number, :question_text, :option_a, :option_b, :option_c, :correct_answer, :topic, :active)",
-            [{"active": 1, **q, "mock_id": mock_id, "session_number": session_number} for q in questions],
+            "INSERT INTO questions (mock_id, session_number, q_number, question_text, option_a, option_b, option_c, correct_answer, topic, active, explanation)"
+            " VALUES (:mock_id, :session_number, :q_number, :question_text, :option_a, :option_b, :option_c, :correct_answer, :topic, :active, :explanation)",
+            [{"active": 1, "explanation": None, **q, "mock_id": mock_id, "session_number": session_number} for q in questions],
         )
 
 
@@ -181,11 +185,16 @@ def get_excluded_questions(mock_id, session_number):
         ).fetchall()
 
 
-def update_question(question_id, question_text, option_a, option_b, option_c, correct_answer, topic, active):
+def get_question_by_id(question_id):
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM questions WHERE id = ?", (question_id,)).fetchone()
+
+
+def update_question(question_id, question_text, option_a, option_b, option_c, correct_answer, topic, active, explanation=None):
     with get_conn() as conn:
         conn.execute(
-            "UPDATE questions SET question_text=?, option_a=?, option_b=?, option_c=?, correct_answer=?, topic=?, active=? WHERE id=?",
-            (question_text, option_a, option_b, option_c, correct_answer, topic, active, question_id),
+            "UPDATE questions SET question_text=?, option_a=?, option_b=?, option_c=?, correct_answer=?, topic=?, active=?, explanation=? WHERE id=?",
+            (question_text, option_a, option_b, option_c, correct_answer, topic, active, explanation, question_id),
         )
 
 
@@ -291,7 +300,7 @@ def get_review_data(attempt_id):
         return conn.execute(
             """
             SELECT q.id as question_id, q.q_number, q.question_text, q.option_a, q.option_b, q.option_c,
-                   q.correct_answer, q.topic, r.selected_answer, r.is_correct, r.flagged, r.time_spent_seconds
+                   q.correct_answer, q.topic, q.explanation, r.selected_answer, r.is_correct, r.flagged, r.time_spent_seconds
             FROM questions q
             LEFT JOIN responses r ON r.question_id = q.id AND r.attempt_id = ?
             WHERE q.mock_id = (SELECT mock_id FROM attempts WHERE id = ?)

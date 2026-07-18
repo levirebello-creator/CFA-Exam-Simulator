@@ -79,3 +79,5 @@ for r in review_rows:
             st.markdown(f"**{letter}.** {text}{tag}")
         if r["topic"]:
             st.caption(f"Topic: {r['topic']}")
+        if not r["is_correct"] and r["correct_answer"] and r["explanation"]:
+            st.info(f"**Explanation:** {r['explanation']}")
