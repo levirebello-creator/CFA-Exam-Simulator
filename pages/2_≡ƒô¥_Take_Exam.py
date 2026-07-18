@@ -53,7 +53,7 @@ if "exam_attempt_id" not in st.session_state:
 
     st.markdown("### Exam Instructions")
     st.markdown(f"""
-    - This session has **{mock_choice['questions_per_session']} questions**
+    - This session has **{len(questions)} questions**
     - You will have **{mock_choice['minutes_per_session']} minutes**
     - You may navigate between questions and flag questions for review
     - **The exam will auto-submit when time runs out** — just like the real thing
