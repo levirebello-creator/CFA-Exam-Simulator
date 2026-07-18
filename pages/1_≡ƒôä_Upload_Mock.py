@@ -258,6 +258,7 @@ if mock_id:
                     "option_c": st.column_config.TextColumn("Option C", width="medium"),
                     "correct_answer": st.column_config.SelectboxColumn("Correct answer", options=["A", "B", "C", None]),
                     "topic": st.column_config.TextColumn("Topic (optional)"),
+                    "explanation": st.column_config.TextColumn("Explanation (optional)", width="large"),
                 },
                 hide_index=True,
                 key=f"fix_excluded_{mock_id}_{sess_n}",
@@ -270,6 +271,7 @@ if mock_id:
                     db.update_question(
                         r["id"], r["question_text"], r["option_a"], r["option_b"], r["option_c"],
                         r.get("correct_answer") or None, r.get("topic") or None, 1 if complete else 0,
+                        r.get("explanation") or None,
                     )
                     reincluded += complete
                 st.success(f"{reincluded} of {len(rows)} question(s) fixed and re-included in the exam.")
