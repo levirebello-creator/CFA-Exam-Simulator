@@ -32,7 +32,7 @@ NUMBERED_ITEM_PATTERN = re.compile(
 # skipped, which merges that whole question into the previous one. So we only
 # require that "Question" isn't glued onto a preceding word (same tolerance
 # OPTION_PATTERN uses below) and don't anchor the end of the line at all.
-QUESTION_HEADER_PATTERN = re.compile(r"(?<![A-Za-z])Question\s+(\d{1,3})\b", re.MULTILINE)
+QUESTION_HEADER_PATTERN = re.compile(r"Question\s*(\d{1,3})\b", re.MULTILINE)
 
 # Matches an option line, e.g. "A. text", "(A) text", "A) text"
 # Tolerant of common OCR artifacts seen in real scans:
@@ -89,7 +89,7 @@ ANSWER_KEY_LINE_LOOSE = re.compile(r"(\d{1,3})\s*[\.\)\-:]\s*([ABC])\b")
 # in the same document, silently zeroing out that session's answer key.
 # "Answers N" is specific enough (requires a number right after) that this
 # doesn't meaningfully risk matching ordinary prose.
-ANSWER_HEADER_PATTERN = re.compile(r"(?<![A-Za-z])Answers?\s+(\d{1,3})\b", re.MULTILINE)
+ANSWER_HEADER_PATTERN = re.compile(r"Answers?\s*(\d{1,3})\b", re.MULTILINE)
 
 # ---------- Session-splitting pattern (for combined 2-session PDFs) ----------
 
